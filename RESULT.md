@@ -4,7 +4,7 @@ Outcome: the search field now searches inside files. Pick "Contents" in the scop
 
 Branch: herdr/findersear-findersearch-cont. SHA: see `git log -1`.
 
-Build green. Tests green except MarqueeSelectionTests, which crashes/asserts in this headless run (window-layout test; not touched by this change, not checked against baseline).
+Build green. Tests green except two environment-dependent failures: MarqueeSelectionTests/testIconGridPublishesBoundsAndSelectsVisibleFiles crashes after asserting in this headless run (window-layout test; verified identical on the base commit, so pre-existing), and ThumbnailScrollTests/testFastIconGridScrollWithThumbnails, a live-render scroll-latency assert (p95 < 50 ms) that passed on the base build (p95 33 ms) and failed here only under concurrent build load (p95 59–115 ms); its code path is untouched.
 
 ## Reply JSON shape (fsearch stdio, op grep)
 {"ok":true,"files":[{"path":"...","git":"M"?,"matches":[{"line":3,"col":148,"ranges":[[148,164]],"text":"...","def":true?,"before":[..]?,"after":[..]?}]}],"complete":bool,"indexing":n,"next":n?,"candidates":n,"read":n,"source":"scan|index","took_us":n}
