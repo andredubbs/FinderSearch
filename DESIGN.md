@@ -105,7 +105,7 @@ The interface is dense enough for file work while keeping location, selection, e
 - Native Finder-style chrome with a sidebar, unified toolbar, tabs, and path/status bars.
 - Four interchangeable file surfaces: icons, list, columns, and gallery.
 - Real file icons/thumbnails, system typography/colors, and familiar keyboard actions.
-- Search integrated into the toolbar with a 300ms typing debounce.
+- Search integrated into the toolbar with a 50ms typing debounce.
 
 ## Colors
 
@@ -147,7 +147,7 @@ The palette comes from macOS semantic surfaces and the user’s system accent. F
 
 The window opens at 1050 × 680pt with an 850 × 470pt minimum and a unified toolbar. `NavigationSplitView` keeps the sidebar between 170pt and 280pt wide, with 208pt as its ideal width. Sidebar sections are Recents, Favorites, Locations, and Tags; mounted volumes and iCloud Drive appear under Locations. Full Disk Access status sits in the sidebar’s bottom safe-area inset when required.
 
-The detail pane stacks an optional 32pt tab bar, the toolbar search field, an optional search-scope bar, an error banner, the active file surface, a horizontal path bar, and a 28pt status bar. The toolbar has back/forward controls, a 150pt segmented view switcher, sorting, sharing, tags, and actions. The scope bar uses 16pt horizontal and 7pt vertical inset, 10pt internal spacing, and a 130pt kind picker. Search waits for 300ms of typing inactivity before querying; search results use the table in column mode.
+The detail pane stacks an optional 32pt tab bar, the toolbar search field, an optional search-scope bar, an error banner, the active file surface, a horizontal path bar, and a 28pt status bar. The toolbar has back/forward controls, a 150pt segmented view switcher, sorting, sharing, tags, and actions. The scope bar uses 16pt horizontal and 7pt vertical inset, 10pt internal spacing, a Names/Contents segmented match picker, and a 130pt kind picker. Search waits for 50ms of typing inactivity before querying; search results use the table in column mode.
 
 The four views retain their exact local density. Icon view starts at 64pt icons and exposes a 40–96pt slider with a 100pt track; its adaptive grid uses 14pt columns, 18pt rows, and 18pt outer padding. Icon labels are 12pt, centered, and capped at two lines. List view is a native AppKit `NSTableView` with fixed 24pt rows and reusable cells with 12pt text, 16pt file icons, and Name, Date Modified, Size, and Kind columns. Columns use 235pt item columns and a 240pt file preview column. Gallery uses a full preview, an 115pt thumbnail strip, 64pt thumbnails, 11pt labels, and 100pt label width.
 
@@ -172,8 +172,9 @@ Toolbar controls, menus, lists, tables, sheets, and buttons use the system contr
 
 ### Unified Toolbar and Search
 - **Style:** Unified macOS toolbar with back/forward `ControlGroup`, segmented view picker, sort menu, ShareLink, tag menu, and actions menu.
-- **Search:** Native `.searchable` field with “Search” prompt, 12pt scope controls, This Mac/current-folder buttons, and a 130pt kind picker.
-- **State:** Search switches sorting to relevance and applies the 300ms debounce; clearing restores the cached browsing view and sort order while refreshing in the background. Errors use a control-background banner with a dismiss symbol.
+- **Search:** Native `.searchable` field with “Search” prompt, 12pt scope controls, This Mac/current-folder buttons, a Names/Contents segmented match picker, and a 130pt kind picker.
+- **State:** Search switches sorting to relevance and applies the 50ms debounce; clearing restores the cached browsing view and sort order while refreshing in the background. Errors use a control-background banner with a dismiss symbol.
+- **Content results:** With Contents selected (or a `grep:`/`regex:`/`sym:` operator in the query), results list each file once on 24pt rows with an inline disclosure chevron, icon, name, parent path, and match count; matching lines sit indented beneath on 20pt rows with a trailing-aligned 11pt line number and accent-tinted match ranges. Left/Right fold and unfold the focused file; Return opens it.
 
 ### Tabs
 - **Style:** Tabs appear when more than one tab exists, with 32pt height, 8pt internal vertical padding, 12pt horizontal padding, plain title/close buttons, a selected control background, and a plus action.

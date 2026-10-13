@@ -26,8 +26,54 @@ struct Reply: Decodable {
     let full_disk_access: Bool?
 }
 
+/// One matched line in a file a content search returned. `ranges` are byte
+/// offsets into `text` (the line's first 400 bytes); `before`/`after` are
+/// the context lines a `context`, `before` or `after` request field asked
+/// for. `def` marks a definition match (`sym:` or `defs`).
+struct GrepMatch: Decodable, Hashable {
+    let line: Int
+    let text: String
+    let col: Int
+    let ranges: [[Int]]
+    var def: Bool? = nil
+    var before: [String]? = nil
+    var after: [String]? = nil
+}
+/// A file holding at least one matched line.
+struct GrepFile: Decodable, Identifiable, Hashable {
+    var id: String { path }
+    let path: String
+    let matches: [GrepMatch]
+    var url: URL { URL(fileURLWithPath: path) }
+    var name: String { (path as NSString).lastPathComponent }
+    var parent: String {
+        (path as NSString).deletingLastPathComponent.replacingOccurrences(
+            of: NSHomeDirectory(), with: "~", options: .anchored)
+    }
+}
+/// The reply to an `{"op": "grep"}` request or a query carrying a
+/// `grep:`/`regex:`/`sym:`/`content:`/`symbol:` term.
+struct GrepReply: Decodable {
+    let ok: Bool
+    let error: String?
+    let files: [GrepFile]?
+    let took_us: UInt64?
+    /// Where the matches came from: the content index, a live scan, or one
+    /// named file.
+    let source: String?
+    let candidates: Int?
+    let read: Int?
+    /// False when the time budget ran out before every candidate was read.
+    let complete: Bool?
+    /// How much of the content index was still being built.
+    let indexing: Int?
+    /// Where the next page starts, when there may be more files.
+    let next: Int?
+}
+
 protocol SearchService: Sendable {
     func request(_ fields: [String: Any]) async throws -> Reply
+    func grep(_ fields: [String: Any]) async throws -> GrepReply
 }
 
 /// A single warm stdio client. Blocking I/O stays on its own serial queue.
@@ -90,56 +136,64 @@ final class Engine: SearchService, @unchecked Sendable {
             if value { throw CancellationError() }
         }
     }
-    func request(_ fields: [String: Any]) async throws -> Reply {
+    /// One request's reply line. Runs on `queue`; the daemon answers each
+    /// request with exactly one line of JSON.
+    private func exchange(_ fields: [String: Any], cancellation: Cancellation) throws -> Data {
+        try cancellation.check()
+        try connect()
+        let data = try JSONSerialization.data(withJSONObject: fields)
+        try input?.write(contentsOf: data + Data([10]))
+        guard let output else {
+            throw Failure.message("Engine disconnected.")
+        }
+        let deadline = Date().addingTimeInterval(15)
+        while !buffer.contains(10) {
+            try cancellation.check()
+            let remaining = deadline.timeIntervalSinceNow
+            guard remaining > 0 else {
+                throw Failure.message("Search engine timed out. Try again.")
+            }
+            var fd = pollfd(fd: output.fileDescriptor, events: Int16(POLLIN), revents: 0)
+            let result = poll(&fd, 1, Int32(min(remaining, 0.1) * 1000))
+            if result == 0 { continue }
+            guard result > 0 else {
+                throw Failure.message("Search engine timed out. Try again.")
+            }
+            let chunk = output.availableData
+            guard !chunk.isEmpty else {
+                throw Failure.message("Search engine stopped. Try again.")
+            }
+            buffer.append(chunk)
+        }
+        try cancellation.check()
+        let newline = buffer.firstIndex(of: 10)!
+        let line = buffer.prefix(upTo: newline)
+        buffer.removeSubrange(...newline)
+        return Data(line)
+    }
+    private func call<T: Decodable>(
+        _ fields: [String: Any], as type: T.Type,
+        retry: ((T) throws -> Bool)? = nil
+    ) async throws -> T {
         let cancellation = Cancellation()
         return try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { continuation in
                 queue.async {
                     do {
-                        for attempt in 0..<2 {
-                            try cancellation.check()
-                            try self.connect()
-                            let data = try JSONSerialization.data(withJSONObject: fields)
-                            try self.input?.write(contentsOf: data + Data([10]))
-                            guard let output = self.output else {
-                                throw Failure.message("Engine disconnected.")
-                            }
-                            let deadline = Date().addingTimeInterval(15)
-                            while !self.buffer.contains(10) {
-                                try cancellation.check()
-                                let remaining = deadline.timeIntervalSinceNow
-                                guard remaining > 0 else {
-                                    throw Failure.message("Search engine timed out. Try again.")
-                                }
-                                var fd = pollfd(
-                                    fd: output.fileDescriptor, events: Int16(POLLIN), revents: 0)
-                                let result = poll(&fd, 1, Int32(min(remaining, 0.1) * 1000))
-                                if result == 0 { continue }
-                                guard result > 0 else {
-                                    throw Failure.message("Search engine timed out. Try again.")
-                                }
-                                let chunk = output.availableData
-                                guard !chunk.isEmpty else {
-                                    throw Failure.message("Search engine stopped. Try again.")
-                                }
-                                self.buffer.append(chunk)
-                            }
-                            try cancellation.check()
-                            let newline = self.buffer.firstIndex(of: 10)!
-                            let line = self.buffer.prefix(upTo: newline)
-                            self.buffer.removeSubrange(...newline)
-                            let reply = try JSONDecoder().decode(Reply.self, from: line)
-                            if attempt == 0, fields["op"] as? String == "status",
-                                reply.full_disk_access == false, FullDiskAccess.isGranted(),
-                                let binary = self.connectedBinary,
-                                try RestrictedDaemon.recover(binary: binary)
-                            {
+                        for _ in 0..<2 {
+                            let reply = try JSONDecoder().decode(
+                                T.self,
+                                from: try self.exchange(fields, cancellation: cancellation))
+                            let again = try retry?(reply) ?? false
+                            if again {
                                 self.disconnect()
                                 continue
                             }
                             continuation.resume(returning: reply)
                             return
                         }
+                        continuation.resume(
+                            throwing: Failure.message("Search engine stopped. Try again."))
                     } catch {
                         self.disconnect()
                         continuation.resume(throwing: error)
@@ -149,6 +203,23 @@ final class Engine: SearchService, @unchecked Sendable {
         } onCancel: {
             cancellation.cancel()
         }
+    }
+    func request(_ fields: [String: Any]) async throws -> Reply {
+        var attempt = 0
+        return try await call(fields, as: Reply.self) { reply in
+            defer { attempt += 1 }
+            if attempt == 0, fields["op"] as? String == "status",
+                reply.full_disk_access == false, FullDiskAccess.isGranted(),
+                let binary = self.connectedBinary,
+                try RestrictedDaemon.recover(binary: binary)
+            {
+                return true
+            }
+            return false
+        }
+    }
+    func grep(_ fields: [String: Any]) async throws -> GrepReply {
+        try await call(fields, as: GrepReply.self)
     }
     private func disconnect() {
         process?.terminate(); process = nil

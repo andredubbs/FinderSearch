@@ -80,6 +80,12 @@ private actor ScheduledSearchEngine: SearchService {
             took_us: 1, entries: nil, full_disk_access: nil)
     }
 
+    func grep(_ fields: [String: Any]) async throws -> GrepReply {
+        GrepReply(
+            ok: true, error: nil, files: [], took_us: 1, source: nil, candidates: nil,
+            read: nil, complete: true, indexing: 0, next: nil)
+    }
+
     func releaseFirst() {
         continuation?.resume()
         continuation = nil

@@ -37,12 +37,24 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
                 && !oldValue.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
             {
                 hits = []; selection = []
+                contentFiles = []; contentPartial = false; contentIndexing = false
+                contentCollapsed = []
             }
             schedule()
         }
     }
     @Published var scope = "" { didSet { if !query.isEmpty { schedule() } } }
     @Published var fileType = "" { didSet { schedule() } }
+    /// Search file contents even without a query operator. Written only by
+    /// `setContentSearch`, which schedules once.
+    @Published private(set) var searchContents = false
+    @Published private(set) var contentFiles: [GrepFile] = []
+    /// True when the content engine spent its time budget or holds a next page.
+    @Published private(set) var contentPartial = false
+    /// True while the daemon's content index is still being built.
+    @Published private(set) var contentIndexing = false
+    /// Content-result files whose match lists are folded away.
+    @Published var contentCollapsed: Set<String> = []
     @Published var hits: [Hit] = [] { didSet { invalidateDerived() } }
     @Published var extraHits: [Hit] = [] {
         didSet { selectedCache = nil; extraRowIndex = nil }
@@ -223,6 +235,57 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
     private var metadataObservers: [NSObjectProtocol] = []
     var canWriteHere: Bool { !isSearch && route != "recents" && !route.hasPrefix("tag:") }
     var isSearch: Bool { !query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+    /// Query operators that run a content search. The daemon routes a query
+    /// containing any of them to grep whatever the op says, so the app's
+    /// routing mirrors its substring check exactly.
+    static let contentOperators = ["grep:", "regex:", "sym:", "content:", "symbol:"]
+    static func isContentQuery(_ query: String) -> Bool {
+        contentOperators.contains { query.contains($0) }
+    }
+    var isContentSearch: Bool { searchContents || Self.isContentQuery(query) }
+    /// The scope control's setting: Names strips content operators out of the
+    /// query so the search it shows is the one that runs. The query edit
+    /// reschedules itself; anything else schedules here.
+    func setContentSearch(_ contents: Bool) {
+        guard contents != isContentSearch else { return }
+        searchContents = contents
+        if !contents, Self.isContentQuery(query) {
+            query = Self.strippingContentOperators(query)
+        } else if isSearch {
+            schedule()
+        }
+    }
+    static func strippingContentOperators(_ query: String) -> String {
+        var result = query
+        for op in contentOperators {
+            result = result.replacingOccurrences(
+                of: "(^|\\s|!)" + NSRegularExpression.escapedPattern(for: op),
+                with: "$1", options: .regularExpression)
+        }
+        return result.replacingOccurrences(of: "\\s+", with: " ", options: .regularExpression)
+            .trimmingCharacters(in: .whitespaces)
+    }
+    func setContentCollapsed(_ path: String, _ collapsed: Bool) {
+        if collapsed {
+            contentCollapsed.insert(path)
+        } else {
+            contentCollapsed.remove(path)
+        }
+    }
+    /// Content-search files as Hit rows, keeping the reply's own order.
+    private static func grepHits(_ files: [GrepFile]) async throws -> [Hit] {
+        try await BackgroundWork.run {
+            var hits: [Hit] = []
+            hits.reserveCapacity(files.count)
+            for file in files {
+                try Task.checkCancellation()
+                hits.append(
+                    (try? Hit.read(file.url))
+                        ?? Hit(path: file.path, kind: "file", size: 0, mtime: 0, score: 0))
+            }
+            return hits
+        }
+    }
     var title: String {
         route == "recents"
             ? "Recents"
@@ -399,34 +462,64 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
         let recent = route == "recents" && !isSearch
         loading = !searchingNow && !cached; searching = searchingNow
         searchDebouncing = searchingNow && !immediate
+        let contents = searchingNow && isContentSearch
         task = Task {
             do {
                 let result: [Hit]
+                var files: [GrepFile] = []
+                var partial = false, indexing = false
                 if searchingNow || recent {
                     if searchingNow && !immediate {
                         try await Task.sleep(for: searchDebounce)
                     }
                     try Task.checkCancellation()
                     searchDebouncing = false
-                    var fields: [String: Any] = [
-                        "q": recent ? "mtime:<30d kind:file" : text, "limit": recent ? 1000 : 500,
-                    ]
-                    if recent {
-                        fields["in"] = NSHomeDirectory()
-                    } else if !searchScope.isEmpty {
-                        fields["in"] = searchScope
+                    if contents {
+                        // A query carrying a content operator passes through as
+                        // `q`; a plain Contents-mode query is an explicit grep
+                        // so multi-word phrases stay one pattern.
+                        var fields: [String: Any] = ["limit": 500]
+                        if Self.isContentQuery(text) {
+                            fields["q"] = text
+                        } else {
+                            fields["op"] = "grep"
+                            fields["pattern"] = text
+                            fields["mode"] = "literal"
+                        }
+                        if !searchScope.isEmpty { fields["in"] = searchScope }
+                        let reply = try await engine.grep(fields)
+                        guard reply.ok else {
+                            throw Engine.Failure.message(reply.error ?? "Search failed")
+                        }
+                        files = reply.files ?? []
+                        partial = reply.complete == false || reply.next != nil
+                        indexing = (reply.indexing ?? 0) > 0
+                        result = try await Self.grepHits(files)
+                        if revision == generation {
+                            elapsed = Double(reply.took_us ?? 0) / 1000
+                        }
+                    } else {
+                        var fields: [String: Any] = [
+                            "q": recent ? "mtime:<30d kind:file" : text,
+                            "limit": recent ? 1000 : 500,
+                        ]
+                        if recent {
+                            fields["in"] = NSHomeDirectory()
+                        } else if !searchScope.isEmpty {
+                            fields["in"] = searchScope
+                        }
+                        if type == "dir" {
+                            fields["kind"] = "dir"
+                        } else if !type.isEmpty {
+                            fields["type"] = type
+                        }
+                        let reply = try await engine.request(fields)
+                        guard reply.ok else {
+                            throw Engine.Failure.message(reply.error ?? "Search failed")
+                        }
+                        result = reply.hits ?? [];
+                        if revision == generation { elapsed = Double(reply.took_us ?? 0) / 1000 }
                     }
-                    if type == "dir" {
-                        fields["kind"] = "dir"
-                    } else if !type.isEmpty {
-                        fields["type"] = type
-                    }
-                    let reply = try await engine.request(fields)
-                    guard reply.ok else {
-                        throw Engine.Failure.message(reply.error ?? "Search failed")
-                    }
-                    result = reply.hits ?? [];
-                    if revision == generation { elapsed = Double(reply.took_us ?? 0) / 1000 }
                 } else {
                     if !cached {
                         await Task.yield()
@@ -455,6 +548,8 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
                     }
                 }
                 publish(result, prepared: prepared)
+                contentFiles = files; contentPartial = partial; contentIndexing = indexing
+                contentCollapsed.formIntersection(files.map(\.path))
                 selection.formIntersection(
                     Set(
                         (sortedHits + extraHits.filter { showHidden || !$0.name.hasPrefix(".") })
@@ -470,7 +565,7 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
             } catch is CancellationError {} catch {
                 guard revision == generation else { return };
                 self.error = error.localizedDescription; hits = []; selection = []; loading = false;
-                searching = false
+                searching = false; contentFiles = []; contentCollapsed = []
             }
         }
     }
