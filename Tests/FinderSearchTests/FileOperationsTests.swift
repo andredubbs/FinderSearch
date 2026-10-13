@@ -526,6 +526,11 @@ private struct StatusSearchEngine: SearchService {
         Reply(ok: true, error: nil, hits: nil, took_us: nil, entries: 1,
               full_disk_access: fullDiskAccess)
     }
+    func grep(_ fields: [String: Any]) async throws -> GrepReply {
+        GrepReply(
+            ok: true, error: nil, files: [], took_us: 1, source: nil, candidates: nil,
+            read: nil, complete: true, indexing: 0, next: nil)
+    }
 }
 
 private actor RecordingSearchEngine: SearchService {
@@ -534,5 +539,10 @@ private actor RecordingSearchEngine: SearchService {
         queries.append(fields["q"] as? String ?? "")
         return Reply(
             ok: true, error: nil, hits: [], took_us: 1, entries: nil, full_disk_access: nil)
+    }
+    func grep(_ fields: [String: Any]) async throws -> GrepReply {
+        GrepReply(
+            ok: true, error: nil, files: [], took_us: 1, source: nil, candidates: nil,
+            read: nil, complete: true, indexing: 0, next: nil)
     }
 }

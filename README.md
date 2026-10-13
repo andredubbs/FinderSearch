@@ -18,6 +18,9 @@ preview files, and manage your files in a familiar macOS interface.
 
 - **Find files quickly.** Fuzzy matching, relevance ranking, folder scope, and
   filters like `ext:pdf` and `mtime:<7d`.
+- **Search inside files.** Switch the scope bar to Contents, or type `grep:`,
+  `regex:`, or `sym:` in the search field. Results group matching lines under
+  each file with line numbers and highlighted matches.
 - **Browse your way.** Icon, list, column, and gallery views, Quick Look previews,
   and tabs that restore when you reopen the app.
 - **Get file work done.** Drag selection, copy and move, batch rename, ZIP tools,
@@ -72,7 +75,7 @@ Apple Silicon is verified; Intel builds remain unverified.
 
 ## Current limits
 
-FinderSearch is still early. Content search, AirDrop, Finder extensions, saved
+FinderSearch is still early. AirDrop, Finder extensions, saved
 smart folders, folder merging, and persistent undo history aren't supported yet.
 Slow disks and cloud providers can still take time.
 

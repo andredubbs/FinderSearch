@@ -164,7 +164,9 @@ struct BrowserView: View {
                     .contentShape(Rectangle())
                     .contextMenu { backgroundActions }
                     .modifier(SafeBackgroundDropTarget(model: model))
-                    .focusable(model.viewMode == .icons || model.viewMode == .gallery)
+                    .focusable(
+                        model.viewMode == .icons || model.viewMode == .gallery
+                            || model.isContentSearch)
                     .focused($keyboardFocus, equals: .files).focusEffectDisabled()
                 pathBar
                 statusBar
@@ -307,12 +309,24 @@ struct BrowserView: View {
             else { return event }
             if event.modifierFlags.intersection([.command, .control, .option]).isEmpty {
                 if event.keyCode == 49 { model.preview = model.selected; return nil }
-                if event.keyCode == 36 { model.rename(); return nil }
+                if event.keyCode == 36 {
+                    // Return opens a content match, like a Spotlight result.
+                    if model.isContentSearch { model.open() } else { model.rename() }
+                    return nil
+                }
                 if event.keyCode == 53 { model.selection = []; return nil }
-                if (model.viewMode == .icons || model.viewMode == .gallery
+                if (model.isContentSearch || model.viewMode == .icons
+                    || model.viewMode == .gallery
                     || (model.viewMode == .columns && [125, 126].contains(event.keyCode))),
                     [123, 124, 125, 126].contains(event.keyCode)
                 {
+                    // Content results fold like a Finder list's disclosure rows.
+                    if model.isContentSearch, [123, 124].contains(event.keyCode),
+                        let path = model.focusedPath
+                    {
+                        model.setContentCollapsed(path, event.keyCode == 123)
+                        return nil
+                    }
                     let stride = model.viewMode == .icons ? gridColumns : 1
                     let delta =
                         event.keyCode == 123
@@ -330,19 +344,36 @@ struct BrowserView: View {
         }
     }
     private var searchScopeBar: some View {
-        HStack(spacing: 10) {
-            Text("Search:").foregroundStyle(.secondary)
-            Button("This Mac") { model.scope = "" }.buttonStyle(.bordered).tint(
-                model.scope.isEmpty ? .accentColor : .secondary)
-            Button(model.location.lastPathComponent) { model.scope = model.location.path }
-                .buttonStyle(.bordered).tint(model.scope.isEmpty ? .secondary : .accentColor)
-            Spacer()
-            Picker("Kind", selection: $model.fileType) {
-                Text("Any Kind").tag(""); Text("Folder").tag("dir"); Text("Document").tag("doc");
-                Text("Image").tag("image"); Text("Movie").tag("video"); Text("Audio").tag("audio")
-            }.labelsHidden().frame(width: 130)
-        }.font(.system(size: 12)).padding(.horizontal, 16).padding(.vertical, 7).background(
-            Color(nsColor: .controlBackgroundColor))
+        VStack(spacing: 0) {
+            HStack(spacing: 10) {
+                Text("Search:").foregroundStyle(.secondary)
+                Button("This Mac") { model.scope = "" }.buttonStyle(.bordered).tint(
+                    model.scope.isEmpty ? .accentColor : .secondary)
+                Button(model.location.lastPathComponent) { model.scope = model.location.path }
+                    .buttonStyle(.bordered).tint(
+                        model.scope.isEmpty ? .secondary : .accentColor)
+                Picker(
+                    "Match",
+                    selection: Binding(
+                        get: { model.isContentSearch }, set: { model.setContentSearch($0) })
+                ) {
+                    Text("Names").tag(false)
+                    Text("Contents").tag(true)
+                }
+                .pickerStyle(.segmented).labelsHidden().fixedSize()
+                .accessibilityLabel("Match file names or contents")
+                Spacer()
+                if !model.isContentSearch {
+                    Picker("Kind", selection: $model.fileType) {
+                        Text("Any Kind").tag(""); Text("Folder").tag("dir");
+                        Text("Document").tag("doc");
+                        Text("Image").tag("image"); Text("Movie").tag("video");
+                        Text("Audio").tag("audio")
+                    }.labelsHidden().frame(width: 130)
+                }
+            }.font(.system(size: 12)).padding(.horizontal, 16).padding(.vertical, 7)
+            Divider()
+        }.background(Color(nsColor: .controlBackgroundColor))
     }
     @ViewBuilder private var fileContent: some View {
         if model.viewMode == .columns && model.canWriteHere {
@@ -357,9 +388,14 @@ struct BrowserView: View {
                     systemImage: model.isSearch ? "magnifyingglass" : "folder")
             } description: {
                 Text(
-                    model.isSearch
-                        ? "Try a different name or search location." : "This folder is empty.")
+                    model.isContentSearch
+                        ? "Try a different pattern or search location."
+                        : model.isSearch
+                            ? "Try a different name or search location."
+                            : "This folder is empty.")
             }
+        } else if model.isContentSearch {
+            ContentResults(model: model, select: select, rowMenu: rowActions).id(model.id)
         } else {
             switch model.viewMode {
             case .icons: iconGrid.id(model.id)
@@ -480,11 +516,16 @@ struct BrowserView: View {
             } else {
                 Text(
                     model.selection.isEmpty
-                        ? (model.isSearch && model.hits.count == 500
-                            ? "First 500 matches" : "\(model.sortedHits.count) items")
+                        ? (model.isContentSearch
+                            ? (model.contentPartial
+                                ? "First \(model.sortedHits.count) files"
+                                : "\(model.sortedHits.count) files")
+                            : model.isSearch && model.hits.count == 500
+                                ? "First 500 matches" : "\(model.sortedHits.count) items")
                         : "\(model.selection.count) selected")
             }
             if model.isSearch { Text(String(format: "· %.1f ms", model.elapsed)).monospacedDigit() }
+            if model.contentIndexing { Text("· indexing contents") }
             Spacer()
             if model.viewMode == .icons {
                 Image(systemName: "square").font(.system(size: 8));
