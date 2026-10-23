@@ -18,9 +18,14 @@ use std::time::{Duration, Instant};
 
 // Every search scans the whole overlay (~1 ms per 100k entries), and a
 // follower starting up replays everything since the save, so fold it into
-// the base once it grows: ~1 s of CPU and a ~280 MB write, about hourly on a
-// busy disk. Otherwise only twice a day; restart replays FSEvents anyway.
+// the base once it grows. A fold is no longer cheap at 23M entries (5-30 s
+// of CPU, a ~520 MB write), and one recursive relist of a busy 100k-entry
+// tree (agent session folders) passes COMPACT_PENDING in seconds, so fold at
+// most every COMPACT_GAP unless the overlay is big enough to slow searches.
+// Otherwise only twice a day; restart replays FSEvents anyway.
 const COMPACT_PENDING: usize = 50_000;
+const COMPACT_GAP: Duration = Duration::from_secs(15 * 60);
+const COMPACT_HARD: usize = 2_000_000;
 const COMPACT_EVERY: Duration = Duration::from_secs(12 * 3600);
 const SCAN_THREADS: usize = 8;
 const CONTENT_QUIET: Duration = Duration::from_secs(2);
@@ -1160,7 +1165,8 @@ fn apply_loop(shared: &Arc<Shared>, rx: Receiver<Vec<fsevents::Event>>) {
             (live.over.len() + live.dead_count, live.event_id != live.base.event_id)
         };
         let asked = shared.save_requested.swap(false, Ordering::Relaxed);
-        if asked || pending > COMPACT_PENDING || (stale && last_save.elapsed() > COMPACT_EVERY) {
+        let since = last_save.elapsed();
+        if asked || pending > COMPACT_HARD || (pending > COMPACT_PENDING && since > COMPACT_GAP) || (stale && since > COMPACT_EVERY) {
             compact(shared);
             last_save = Instant::now();
         }
