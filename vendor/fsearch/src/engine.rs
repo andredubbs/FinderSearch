@@ -314,8 +314,23 @@ impl Engine {
             *s.loading.0.lock().unwrap() = false;
             s.loading.1.notify_all();
             if let Some(from) = replay {
-                // (A save from before event ids were stamped: from now.)
-                s.watch(if owner && from == 0 { fsevents::current_id() } else { from });
+                let now = fsevents::current_id();
+                if owner && from > now {
+                    // FSEvents ids restart lower when its database is reset
+                    // (an OS update, a purged .fseventsd): there is no
+                    // history from `from`, and event_id would never pass it,
+                    // so every replay replayed nothing. Follow from now,
+                    // relist what changed since the last sync, and save so
+                    // the next start doesn't do this again.
+                    log(format!("FSEvents ids reset (saved {from}, now {now}): following from now"));
+                    s.live.write().unwrap().as_mut().unwrap().event_id = now;
+                    s.watch(now);
+                    relist_changed(&s, "event ids reset", 0);
+                    s.save_requested.store(true, Ordering::Relaxed);
+                } else {
+                    // (A save from before event ids were stamped: from now.)
+                    s.watch(if owner && from == 0 { now } else { from });
+                }
             }
             if let Some(l) = s.live.read().unwrap().as_ref() {
                 l.base.prefault();
