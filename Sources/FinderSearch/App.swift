@@ -480,9 +480,16 @@ struct BrowserView: View {
             } else {
                 Text(
                     model.selection.isEmpty
-                        ? (model.isSearch && model.hits.count == 500
-                            ? "First 500 matches" : "\(model.sortedHits.count) items")
+                        ? (model.isSearch && model.moreResultsOffset != nil
+                            ? "First \(model.sortedHits.count.formatted()) matches"
+                            : "\(model.sortedHits.count.formatted()) items")
                         : "\(model.selection.count) selected")
+                if model.isSearch && model.moreResultsOffset != nil && model.selection.isEmpty {
+                    Button(model.loadingMore ? "Loading…" : "Show More") {
+                        model.loadMoreResults()
+                    }
+                    .controlSize(.small).disabled(model.loadingMore || model.searching)
+                }
             }
             if model.isSearch { Text(String(format: "· %.1f ms", model.elapsed)).monospacedDigit() }
             Spacer()

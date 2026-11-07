@@ -116,6 +116,14 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
     @Published var redoStack: [FileJournal] = []
     @Published var backStack: [URL] = []
     @Published var forwardStack: [URL] = []
+    /// Name-search results per page: the first page, then each "Show More".
+    static let searchPageSize = 2_000
+    static let morePageSize = 5_000
+    /// Where the next page of the current search starts, if it has one.
+    @Published private(set) var moreResultsOffset: Int?
+    @Published private(set) var loadingMore = false
+    private var searchFields: [String: Any] = [:]
+    private var moreTask: Task<Void, Never>?
     private let searchDebounce: Duration
     private var searchDebouncing = false
     private let engine: any SearchService
@@ -388,6 +396,7 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
         guard !busy else { return }
         error = mutationError
         if isSearch { extraHits = [] }
+        moreTask?.cancel(); moreTask = nil; loadingMore = false; moreResultsOffset = nil
         let searchingNow = isSearch
         let cached = !searchingNow && restoreDefaultSnapshot()
         if route.hasPrefix("tag:") && !isSearch { loadTag(String(route.dropFirst(4))); return }
@@ -409,8 +418,11 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
                     try Task.checkCancellation()
                     searchDebouncing = false
                     var fields: [String: Any] = [
-                        "q": recent ? "mtime:<30d kind:file" : text, "limit": recent ? 1000 : 500,
+                        "q": recent ? "mtime:<30d kind:file" : text,
+                        "limit": recent ? 1000 : Self.searchPageSize,
                     ]
+                    // An offset makes the daemon say where the next page starts.
+                    if !recent { fields["offset"] = 0 }
                     if recent {
                         fields["in"] = NSHomeDirectory()
                     } else if !searchScope.isEmpty {
@@ -426,7 +438,10 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
                         throw Engine.Failure.message(reply.error ?? "Search failed")
                     }
                     result = reply.hits ?? [];
-                    if revision == generation { elapsed = Double(reply.took_us ?? 0) / 1000 }
+                    if revision == generation {
+                        elapsed = Double(reply.took_us ?? 0) / 1000
+                        if !recent { searchFields = fields; moreResultsOffset = reply.next }
+                    }
                 } else {
                     if !cached {
                         await Task.yield()
@@ -471,6 +486,38 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
                 guard revision == generation else { return };
                 self.error = error.localizedDescription; hits = []; selection = []; loading = false;
                 searching = false
+            }
+        }
+    }
+    /// Fetch the next page of the current name search and add it to the results.
+    func loadMoreResults() {
+        guard isSearch, !searching, !loadingMore, let offset = moreResultsOffset else { return }
+        let revision = generation
+        var fields = searchFields
+        fields["offset"] = offset
+        fields["limit"] = Self.morePageSize
+        loadingMore = true
+        moreTask = Task {
+            defer { if revision == generation { loadingMore = false } }
+            do {
+                let reply = try await engine.request(fields)
+                guard revision == generation, !Task.isCancelled else { return }
+                guard reply.ok else {
+                    throw Engine.Failure.message(reply.error ?? "Search failed")
+                }
+                // Pages are cut from a fresh ranking; skip rows already shown.
+                let known = Set(hits.map(\.path))
+                let added = (reply.hits ?? []).filter { !known.contains($0.path) }
+                let combined = hits + added
+                let prepared = try await FileOrdering.prepareCached(
+                    combined, sort: sort, ascending: ascending, showHidden: showHidden,
+                    isSearch: true)
+                guard revision == generation, !Task.isCancelled else { return }
+                publish(combined, prepared: prepared)
+                moreResultsOffset = added.isEmpty ? nil : reply.next
+            } catch is CancellationError {} catch {
+                guard revision == generation else { return }
+                self.error = error.localizedDescription
             }
         }
     }
