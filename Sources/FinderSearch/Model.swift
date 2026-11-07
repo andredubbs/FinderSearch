@@ -393,10 +393,10 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
         generation += 1; let revision = generation
         task?.cancel()
         searchDebouncing = false
+        moreTask?.cancel(); moreTask = nil; loadingMore = false; moreResultsOffset = nil
         guard !busy else { return }
         error = mutationError
         if isSearch { extraHits = [] }
-        moreTask?.cancel(); moreTask = nil; loadingMore = false; moreResultsOffset = nil
         let searchingNow = isSearch
         let cached = !searchingNow && restoreDefaultSnapshot()
         if route.hasPrefix("tag:") && !isSearch { loadTag(String(route.dropFirst(4))); return }
@@ -509,10 +509,18 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
                 let known = Set(hits.map(\.path))
                 let added = (reply.hits ?? []).filter { !known.contains($0.path) }
                 let combined = hits + added
-                let prepared = try await FileOrdering.prepareCached(
-                    combined, sort: sort, ascending: ascending, showHidden: showHidden,
-                    isSearch: true)
-                guard revision == generation, !Task.isCancelled else { return }
+                var prepared: FileOrdering.Cache
+                while true {
+                    // The sort can change while a page is ordered; retry until it holds.
+                    let ordering = sort, direction = ascending, visibility = showHidden
+                    prepared = try await FileOrdering.prepareCached(
+                        combined, sort: ordering, ascending: direction, showHidden: visibility,
+                        isSearch: true)
+                    guard revision == generation, !Task.isCancelled else { return }
+                    if ordering == sort && direction == ascending && visibility == showHidden {
+                        break
+                    }
+                }
                 publish(combined, prepared: prepared)
                 moreResultsOffset = added.isEmpty ? nil : reply.next
             } catch is CancellationError {} catch {
@@ -691,6 +699,7 @@ struct FileJournal { let name: String; let operations: [FileMutation] }
         }
         operationControl = control
         task?.cancel(); prefetchTask?.cancel(); generation += 1
+        moreTask?.cancel(); moreTask = nil; loadingMore = false
         snapshots.removeAll(); snapshotOrder.removeAll()
         let originalHits = hits, originalExtra = extraHits, originalSelection = selection
         let originalOrder = sortedHits
