@@ -24,6 +24,8 @@ struct Reply: Decodable {
     let took_us: UInt64?
     let entries: Int?
     let full_disk_access: Bool?
+    /// Where the next page of a paged search starts; nil on the last page.
+    var next: Int? = nil
 }
 
 protocol SearchService: Sendable {
