@@ -48,6 +48,19 @@ PLIST
 codesign --force --sign - "$app/Contents/Helpers/fsearch"
 codesign --force --sign - "$app"
 codesign --verify --deep --strict "$app"
+# Spotlight matches word prefixes, so "fsearch" never finds "FinderSearch".
+# Give the bundle searchable keywords (set after signing; the bundle folder's
+# extended attributes are not part of the signature).
+python3 - "$app" <<'PY'
+import plistlib, subprocess, sys
+for key, value in [
+    ("kMDItemKeywords", ["fsearch", "finder search", "file search"]),
+    ("kMDItemFinderComment", "fsearch"),
+]:
+    data = plistlib.dumps(value, fmt=plistlib.FMT_BINARY).hex()
+    subprocess.run(["xattr", "-wx", f"com.apple.metadata:{key}", data, sys.argv[1]], check=True)
+PY
+codesign --verify --deep --strict "$app"
 # Launch Services notices updated bundles by their directory modification time.
 touch "$app"
 printf 'Built %s\n' "$app"
